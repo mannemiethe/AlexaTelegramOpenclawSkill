@@ -1,0 +1,66 @@
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      STACK_NAME: ${{ secrets.AWS_STACK_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SAM
+        uses: aws-actions/setup-sam@v2
+
+      - name: Build SAM app
+        run: sam build
+
+      - name: Deploy SAM stack
+        run: |
+          sam deploy \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM \
+            --resolve-s3 \
+            --parameter-overrides \
+              AlexaSkillId='${{ secrets.ALEXA_SKILL_ID }}' \
+              OpenClawWebhookUrl='${{ secrets.OPENCLAW_WEBHOOK_URL }}' \
+              OpenClawApiToken='${{ secrets.OPENCLAW_API_TOKEN }}' \
+              TelegramBotToken='${{ secrets.TELEGRAM_BOT_TOKEN }}' \
+              TelegramChatId='${{ secrets.TELEGRAM_CHAT_ID }}' \
+              TelegramThreadId='${{ secrets.TELEGRAM_THREAD_ID }}' \
+              TelegramApiId='${{ secrets.TELEGRAM_API_ID }}' \
+              TelegramApiHash='${{ secrets.TELEGRAM_API_HASH }}' \
+              TelegramSessionString='${{ secrets.TELEGRAM_SESSION_STRING }}' \
+              RequestTimeoutMs='25000'

@@ -1,0 +1,17 @@
+{
+  "name": "alexa-telegram-skill",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Alexa Custom Skill – leitet Spracheingaben per Telegram MTProto weiter und liest die Antwort vor",
+  "type": "module",
+  "main": "src/handler.mjs",
+  "scripts": {
+    "lint": "node --check src/handler.mjs",
+    "test": "node --test",
+    "build": "echo 'Build handled by AWS SAM'"
+  },
+  "dependencies": {
+    "ask-sdk-core": "^2.14.0",
+    "telegram": "^2.26.22"
+  }
+}

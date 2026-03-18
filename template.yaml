@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Alexa Telegram Skill
+
+Parameters:
+  AlexaSkillId:
+    Type: String
+    Default: ''
+  TelegramChatId:
+    Type: String
+    Default: ''
+  TelegramThreadId:
+    Type: String
+    Default: ''
+  TelegramApiId:
+    Type: String
+    Default: ''
+  TelegramApiHash:
+    Type: String
+    Default: ''
+    NoEcho: true
+  TelegramSessionString:
+    Type: String
+    Default: ''
+    NoEcho: true
+  TgReplyWaitMs:
+    Type: String
+    Default: '20000'
+  TgUserConnectTimeoutMs:
+    Type: String
+    Default: '2200'
+  TgUserReadTimeoutMs:
+    Type: String
+    Default: '2200'
+  TgUserSendTimeoutMs:
+    Type: String
+    Default: '2200'
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+
+Resources:
+  AlexaSkillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: AlexaTelegramOpenclawSkill
+      CodeUri: .
+      Handler: src/handler.handler
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      Environment:
+        Variables:
+          ALEXA_SKILL_ID: !Ref AlexaSkillId
+          TELEGRAM_CHAT_ID: !Ref TelegramChatId
+          TELEGRAM_THREAD_ID: !Ref TelegramThreadId
+          TELEGRAM_API_ID: !Ref TelegramApiId
+          TELEGRAM_API_HASH: !Ref TelegramApiHash
+          TELEGRAM_SESSION_STRING: !Ref TelegramSessionString
+          TG_REPLY_WAIT_MS: !Ref TgReplyWaitMs
+          TG_USER_CONNECT_TIMEOUT_MS: !Ref TgUserConnectTimeoutMs
+          TG_USER_READ_TIMEOUT_MS: !Ref TgUserReadTimeoutMs
+          TG_USER_SEND_TIMEOUT_MS: !Ref TgUserSendTimeoutMs
+
+Outputs:
+  AlexaSkillFunctionArn:
+    Description: Lambda ARN
+    Value: !GetAtt AlexaSkillFunction.Arn

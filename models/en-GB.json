@@ -1,0 +1,117 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "chloe",
+      "intents": [
+        {
+          "name": "ChatIntent",
+          "slots": [
+            {
+              "name": "query",
+              "type": "AMAZON.SearchQuery",
+              "samples": [
+                "{query}"
+              ]
+            }
+          ],
+          "samples": [
+            "ask {query}",
+            "tell {query}",
+            "question {query}",
+            "{query} please"
+          ]
+        },
+        {
+          "name": "LastResponseIntent",
+          "slots": [],
+          "samples": [
+            "what was the last answer",
+            "what was the last response",
+            "repeat the last answer",
+            "last answer",
+            "what did you say last"
+          ]
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.RepeatIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": [
+            "help"
+          ]
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": [
+            "pause",
+            "wait",
+            "cancel"
+          ]
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": [
+            "stop",
+            "quit",
+            "exit"
+          ]
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        }
+      ],
+      "types": []
+    },
+    "dialog": {
+      "intents": [
+        {
+          "name": "ChatIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "query",
+              "type": "AMAZON.SearchQuery",
+              "confirmationRequired": false,
+              "elicitationRequired": true,
+              "prompts": {
+                "elicitation": "Elicit.Slot.ChatIntent.query"
+              }
+            }
+          ]
+        }
+      ],
+      "delegationStrategy": "ALWAYS"
+    },
+    "prompts": [
+      {
+        "id": "Elicit.Slot.ChatIntent.query",
+        "variations": [
+          {
+            "type": "PlainText",
+            "value": "Hi, I'm Chloe. What would you like to ask?"
+          },
+          {
+            "type": "PlainText",
+            "value": "What would you like to know?"
+          },
+          {
+            "type": "PlainText",
+            "value": "Yes?"
+          },
+          {
+            "type": "PlainText",
+            "value": "How can I help?"
+          }
+        ]
+      }
+    ]
+  }
+}

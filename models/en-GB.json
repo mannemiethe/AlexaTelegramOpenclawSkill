@@ -1,7 +1,7 @@
 {
   "interactionModel": {
     "languageModel": {
-      "invocationName": "chloe",
+      "invocationName": "open claw",
       "intents": [
         {
           "name": "ChatIntent",
@@ -80,38 +80,14 @@
               "name": "query",
               "type": "AMAZON.SearchQuery",
               "confirmationRequired": false,
-              "elicitationRequired": true,
-              "prompts": {
-                "elicitation": "Elicit.Slot.ChatIntent.query"
-              }
+              "elicitationRequired": false,
+              "prompts": {}
             }
           ]
         }
       ],
-      "delegationStrategy": "ALWAYS"
+      "delegationStrategy": "SKILL_RESPONSE"
     },
-    "prompts": [
-      {
-        "id": "Elicit.Slot.ChatIntent.query",
-        "variations": [
-          {
-            "type": "PlainText",
-            "value": "Hi, I'm Chloe. What would you like to ask?"
-          },
-          {
-            "type": "PlainText",
-            "value": "What would you like to know?"
-          },
-          {
-            "type": "PlainText",
-            "value": "Yes?"
-          },
-          {
-            "type": "PlainText",
-            "value": "How can I help?"
-          }
-        ]
-      }
-    ]
+    "prompts": []
   }
 }

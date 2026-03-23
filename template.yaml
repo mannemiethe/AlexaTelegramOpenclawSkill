@@ -35,14 +35,68 @@ Parameters:
   TgUserSendTimeoutMs:
     Type: String
     Default: '2200'
+  AlexaOppositeVoice:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  UseWaitingSound:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
 
 Globals:
   Function:
-    Runtime: nodejs20.x
+    Runtime: nodejs24.x
     Timeout: 30
     MemorySize: 256
 
 Resources:
+  AudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  AudioBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AudioBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action: s3:GetObject
+          Resource: !Sub 'arn:aws:s3:::${AudioBucket}/*'
+
+  UploadAudioFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/upload-audio.handler
+      Policies:
+      - AWSLambdaBasicExecutionRole
+      - Statement:
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          - s3:DeleteObject
+          Resource: !Sub 'arn:aws:s3:::${AudioBucket}/*'
+
+  UploadAudioResource:
+    Type: Custom::UploadAudio
+    DependsOn: AudioBucketPolicy
+    Properties:
+      ServiceToken: !GetAtt UploadAudioFunction.Arn
+      BucketName: !Ref AudioBucket
+
   AlexaSkillFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -63,8 +117,14 @@ Resources:
           TG_USER_CONNECT_TIMEOUT_MS: !Ref TgUserConnectTimeoutMs
           TG_USER_READ_TIMEOUT_MS: !Ref TgUserReadTimeoutMs
           TG_USER_SEND_TIMEOUT_MS: !Ref TgUserSendTimeoutMs
+          ALEXA_OPPOSITE_VOICE: !Ref AlexaOppositeVoice
+          USE_WAITING_SOUND: !Ref UseWaitingSound
+          WAITING_AUDIO_URL: !Sub 'https://${AudioBucket}.s3.${AWS::Region}.amazonaws.com/waiting_sound.mp3'
 
 Outputs:
   AlexaSkillFunctionArn:
     Description: Lambda ARN
     Value: !GetAtt AlexaSkillFunction.Arn
+  WaitingAudioUrl:
+    Description: Public URL of the waiting sound MP3
+    Value: !Sub 'https://${AudioBucket}.s3.${AWS::Region}.amazonaws.com/waiting_sound.mp3'

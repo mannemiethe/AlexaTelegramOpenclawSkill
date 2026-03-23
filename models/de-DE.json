@@ -1,111 +1,83 @@
 {
-  "interactionModel": {
-    "languageModel": {
-      "invocationName": "chloe",
-      "intents": [
-        {
-          "name": "ChatIntent",
-          "slots": [
-            {
-              "name": "query",
-              "type": "AMAZON.SearchQuery",
-              "samples": [
-                "{query}"
-              ]
-            }
-          ],
-          "samples": [
-            "frage {query}"
-          ]
+    "interactionModel": {
+        "languageModel": {
+            "invocationName": "open claw",
+            "intents": [
+                {
+                    "name": "ChatIntent",
+                    "slots": [
+                        {
+                            "name": "query",
+                            "type": "AMAZON.SearchQuery",
+                            "samples": [
+                                "{query}"
+                            ]
+                        }
+                    ],
+                    "samples": [
+                        "frage {query}"
+                    ]
+                },
+                {
+                    "name": "LastResponseIntent",
+                    "slots": [],
+                    "samples": [
+                        "was war die letzte antwort",
+                        "was war das letzte",
+                        "wiederhole die letzte antwort",
+                        "letzte antwort",
+                        "was hast du zuletzt gesagt"
+                    ]
+                },
+                {
+                    "name": "AMAZON.CancelIntent",
+                    "samples": [
+                        "pause",
+                        "halt",
+                        "warte",
+                        "abbrechen",
+                        "abbruch"
+                    ]
+                },
+                {
+                    "name": "AMAZON.HelpIntent",
+                    "samples": [
+                        "hilfe"
+                    ]
+                },
+                {
+                    "name": "AMAZON.StopIntent",
+                    "samples": [
+                        "aus",
+                        "beenden"
+                    ]
+                },
+                {
+                    "name": "AMAZON.NavigateHomeIntent",
+                    "samples": []
+                }
+            ],
+            "types": []
         },
-        {
-          "name": "LastResponseIntent",
-          "slots": [],
-          "samples": [
-            "was war die letzte antwort",
-            "was war das letzte",
-            "wiederhole die letzte antwort",
-            "letzte antwort",
-            "was hast du zuletzt gesagt"
-          ]
+        "dialog": {
+            "intents": [
+                {
+                    "name": "ChatIntent",
+                    "confirmationRequired": false,
+                    "prompts": {},
+                    "slots": [
+                        {
+                            "name": "query",
+                            "type": "AMAZON.SearchQuery",
+                            "confirmationRequired": false,
+                            "elicitationRequired": false,
+                            "prompts": {}
+                        }
+                    ]
+                }
+            ],
+            "delegationStrategy": "SKILL_RESPONSE"
         },
-        {
-          "name": "AMAZON.CancelIntent",
-          "samples": [
-            "pause",
-            "halt",
-            "warte",
-            "abbrechen",
-            "abbruch"
-          ]
-        },
-        {
-          "name": "AMAZON.HelpIntent",
-          "samples": [
-            "hilfe"
-          ]
-        },
-        {
-          "name": "AMAZON.StopIntent",
-          "samples": [
-            "aus",
-            "beenden"
-          ]
-        },
-        {
-          "name": "AMAZON.NavigateHomeIntent",
-          "samples": []
-        }
-      ],
-      "types": []
-    },
-    "dialog": {
-      "intents": [
-        {
-          "name": "ChatIntent",
-          "confirmationRequired": false,
-          "prompts": {},
-          "slots": [
-            {
-              "name": "query",
-              "type": "AMAZON.SearchQuery",
-              "confirmationRequired": false,
-              "elicitationRequired": true,
-              "prompts": {
-                "elicitation": "Elicit.Slot.ChatIntent.query"
-              }
-            }
-          ]
-        }
-      ],
-      "delegationStrategy": "ALWAYS"
-    },
-    "prompts": [
-      {
-        "id": "Elicit.Slot.ChatIntent.query",
-        "variations": [
-          {
-            "type": "PlainText",
-            "value": "Hi, ich bin Chloe. Was möchtest du fragen?"
-          },
-          {
-            "type": "PlainText",
-            "value": "Was möchtest du fragen?"
-          },
-          {
-            "type": "PlainText",
-            "value": "Was denn hier los?"
-          },
-          {
-            "type": "PlainText",
-            "value": "Ja?"
-          },
-          {
-            "type": "PlainText",
-            "value": "Wie kann ich helfen?"
-          }
-        ]
-      }
-    ]
-  }
+        "prompts": []
+    }
 }

@@ -1,6 +1,13 @@
 import Alexa from "ask-sdk-core";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
+import tgEvents from "telegram/events/index.js";
+const { NewMessage, MessageEdited, Raw } = tgEvents;
+
+// Pre-built once at module load — avoids object construction on every warm invocation.
+const newMsgEvent = new NewMessage({});
+const editMsgEvent = MessageEdited ? new MessageEdited({}) : Raw ? new Raw({}) : null;
+const isRawFallback = !MessageEdited && Boolean(Raw);
 
 const {
   TELEGRAM_CHAT_ID,
@@ -13,15 +20,26 @@ const {
   TG_USER_READ_TIMEOUT_MS = "2200",
   TG_USER_SEND_TIMEOUT_MS = "2200",
   TG_REPLY_WAIT_MS = "20000",
+  WAITING_AUDIO_URL = "",
+  ALEXA_OPPOSITE_VOICE = "true",
+  USE_WAITING_SOUND = "false",
 } = process.env;
 
 // Best effort memory across warm Lambda invokes per user.
 const lastByUser = new Map();
 let telegramUserClient = null;
 let telegramUserEntity = null;
+const useWaitingSound = USE_WAITING_SOUND.toLowerCase() === "true";
+const audioSpeech = `<speak><audio src="${escapeSsml(WAITING_AUDIO_URL.trim())}"/></speak>`;
+
+// Parse once at cold start to avoid repeated Number() coercions per invocation.
+const tgConnectTimeoutMs = Number(TG_USER_CONNECT_TIMEOUT_MS);
+const tgReadTimeoutMs = Number(TG_USER_READ_TIMEOUT_MS);
+const tgSendTimeoutMs = Number(TG_USER_SEND_TIMEOUT_MS);
+const tgReplyWaitMs = Number(TG_REPLY_WAIT_MS);
 
 function cleanSpeech(text) {
-  if (!text) return "Ich habe gerade keine Antwort erhalten.";
+  if (!text) return "";
   return String(text)
     .replace(/[\u0000-\u001F]/g, " ")
     .replace(/<[^>]+>/g, " ")
@@ -31,8 +49,79 @@ function cleanSpeech(text) {
     .trim();
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const SSML_ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
+function escapeSsml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => SSML_ESCAPE_MAP[ch]);
+}
+
+// CLAWINAMETOKEN is a plain-alphanumeric placeholder that survives cleanSpeech and escapeSsml.
+// It is replaced with the locale-correct <phoneme> tag inside toAlexaSpeech.
+const NAME_PHONEME_DE = '<phoneme alphabet="ipa" ph="klɔːi">Clawi</phoneme>';
+const NAME_PHONEME_EN = '<phoneme alphabet="ipa" ph="klɔːi">Clawi</phoneme>';
+
+// Set to true to use the opposite-gender voice for skill responses.
+// When false, Alexa's default voice for the locale is used (no <voice> tag).
+// Controlled via the ALEXA_OPPOSITE_VOICE environment variable.
+const USE_OPPOSITE_VOICE = ALEXA_OPPOSITE_VOICE.toLowerCase() !== "false";
+
+// Female voices per locale (opposite of a male Alexa default).
+const LOCALE_VOICE_FEMALE = {
+  "de-DE": "Vicki",
+  "de-AT": "Vicki",
+  "de-CH": "Vicki",
+  "en-US": "Joanna",
+  "en-GB": "Amy",
+  "en-AU": "Nicole",
+  "en-CA": "Joanna",
+  "en-IN": "Aditi",
+  "fr-FR": "Celine",
+  "fr-CA": "Chantal",
+  "es-ES": "Conchita",
+  "es-US": "Penelope",
+  "es-MX": "Mia",
+  "it-IT": "Carla",
+  "ja-JP": "Mizuki",
+  "pt-BR": "Vitoria",
+};
+
+// Male voices per locale (opposite of a female Alexa default).
+const LOCALE_VOICE_MALE = {
+  "de-DE": "Hans",
+  "de-AT": "Hans",
+  "de-CH": "Hans",
+  "en-US": "Matthew",
+  "en-GB": "Brian",
+  "en-AU": "Russell",
+  "en-CA": "Matthew",
+  "en-IN": "Matthew",
+  "fr-FR": "Mathieu",
+  "fr-CA": "Mathieu",
+  "es-ES": "Enrique",
+  "es-US": "Miguel",
+  "es-MX": "Miguel",
+  "it-IT": "Giorgio",
+  "ja-JP": "Takumi",
+  "pt-BR": "Ricardo",
+};
+
+// Locales where Alexa's built-in default voice is male — so opposite = female.
+const LOCALES_WITH_MALE_DEFAULT = new Set(["ja-JP"]);
+
+function toAlexaSpeech(text, handlerInput) {
+  const cleaned = cleanSpeech(text);
+  const escaped = escapeSsml(cleaned);
+  const locale = handlerInput?.requestEnvelope?.request?.locale || "de-DE";
+  const withName = escaped.replace(/CLAWINAMETOKEN/g, locale.startsWith("en") ? NAME_PHONEME_EN : NAME_PHONEME_DE);
+
+  if (!USE_OPPOSITE_VOICE) {
+    return `<speak>${withName}</speak>`;
+  }
+
+  const useFemale = LOCALES_WITH_MALE_DEFAULT.has(locale);
+  const voiceMap = useFemale ? LOCALE_VOICE_FEMALE : LOCALE_VOICE_MALE;
+  const voiceName = voiceMap[locale] ?? (useFemale ? "Joanna" : "Matthew");
+
+  return `<speak><voice name="${voiceName}">${withName}</voice></speak>`;
 }
 
 function getUserId(envelope) {
@@ -71,40 +160,18 @@ async function getTelegramUserClient() {
   );
 
   if (!hasCreds) {
-    console.log(
-      "[TG_DEBUG] user client skipped: missing credentials",
-      JSON.stringify({
-        hasApiId: Boolean(TELEGRAM_API_ID),
-        hasApiHash: Boolean(TELEGRAM_API_HASH),
-        hasSession: Boolean(TELEGRAM_SESSION_STRING),
-      }),
-    );
     return null;
   }
 
   if (!Number.isFinite(apiId) || apiId <= 0) {
-    console.log(
-      "[TG_DEBUG] user client skipped: invalid TELEGRAM_API_ID",
-      JSON.stringify({ raw: TELEGRAM_API_ID }),
-    );
     return null;
   }
 
   if (telegramUserClient) {
-    console.log("[TG_DEBUG] user client reuse");
     return telegramUserClient;
   }
 
   try {
-    console.log(
-      "[TG_DEBUG] user client init",
-      JSON.stringify({
-        apiId,
-        sessionLen: TELEGRAM_SESSION_STRING.length,
-        connectTimeoutMs: Number(TG_USER_CONNECT_TIMEOUT_MS),
-      }),
-    );
-
     telegramUserClient = new TelegramClient(
       new StringSession(TELEGRAM_SESSION_STRING.trim()),
       apiId,
@@ -114,11 +181,10 @@ async function getTelegramUserClient() {
 
     await waitFor(
       telegramUserClient.connect(),
-      Number(TG_USER_CONNECT_TIMEOUT_MS),
+      tgConnectTimeoutMs,
       "tg-connect-timeout",
     );
 
-    console.log("[TG_DEBUG] user client connected");
     return telegramUserClient;
   } catch (err) {
     console.log(
@@ -136,15 +202,12 @@ async function getTelegramUserClient() {
 
 async function getTelegramUserEntity(client) {
   if (!client) {
-    console.log("[TG_DEBUG] entity resolve skipped: no client");
     return null;
   }
   if (!TELEGRAM_CHAT_ID) {
-    console.log("[TG_DEBUG] entity resolve skipped: TELEGRAM_CHAT_ID missing");
     return null;
   }
   if (telegramUserEntity) {
-    console.log("[TG_DEBUG] entity reuse");
     return telegramUserEntity;
   }
 
@@ -154,24 +217,20 @@ async function getTelegramUserEntity(client) {
   try {
     // Try numeric id first (e.g. -100...)
     if (Number.isFinite(num)) {
-      console.log("[TG_DEBUG] entity resolve try numeric", JSON.stringify({ raw, num }));
       telegramUserEntity = await waitFor(
         client.getEntity(num),
-        Number(TG_USER_READ_TIMEOUT_MS),
+        tgReadTimeoutMs,
         "tg-entity-timeout-numeric",
       );
-      console.log("[TG_DEBUG] entity resolve ok (numeric)");
       return telegramUserEntity;
     }
 
     // Fallback: username/string form
-    console.log("[TG_DEBUG] entity resolve try string", JSON.stringify({ raw }));
     telegramUserEntity = await waitFor(
       client.getEntity(raw),
-      Number(TG_USER_READ_TIMEOUT_MS),
+      tgReadTimeoutMs,
       "tg-entity-timeout-string",
     );
-    console.log("[TG_DEBUG] entity resolve ok (string)");
     return telegramUserEntity;
   } catch (err) {
     console.log(
@@ -205,7 +264,7 @@ async function getLatestMessageViaUserApi() {
   try {
     const history = await waitFor(
       client.getMessages(peer, { limit: 10 }),
-      Number(TG_USER_READ_TIMEOUT_MS),
+      tgReadTimeoutMs,
       "tg-history-timeout",
     );
 
@@ -248,39 +307,7 @@ async function getLatestMessageViaUserApi() {
   }
 }
 
-async function sendProgressiveResponse(envelope, speech) {
-  try {
-    const directiveUrl = envelope?.context?.System?.apiEndpoint
-      ? `${envelope.context.System.apiEndpoint}/v1/directives`
-      : null;
-    const token = envelope?.context?.System?.apiAccessToken;
-    const requestId = envelope?.request?.requestId;
-
-    if (!directiveUrl || !token || !requestId) return;
-
-    await fetch(directiveUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        header: { requestId },
-        directive: {
-          type: "VoicePlayer.Speak",
-          speech,
-        },
-      }),
-    });
-  } catch (err) {
-    console.log(
-      "Progressive response failed (non-fatal):",
-      err?.message || err,
-    );
-  }
-}
-
-async function sendViaTelegramUserApi(query, userId) {
+async function sendViaTelegramUserApi(query, strings) {
   const client = await getTelegramUserClient();
   if (!client) return null;
 
@@ -288,7 +315,7 @@ async function sendViaTelegramUserApi(query, userId) {
   if (!peer) return null;
 
   try {
-    const msg = `🎤 Alexa: ${query}\n↩️ Bitte antworte direkt auf diese Nachricht, wenn Alexa es vorlesen soll.`;
+    const msg = strings.telegramMsg(query);
     const options = { message: msg };
 
     // Warning: this only makes sense if TELEGRAM_THREAD_ID is actually a message id
@@ -299,7 +326,7 @@ async function sendViaTelegramUserApi(query, userId) {
 
     const sent = await waitFor(
       client.sendMessage(peer, options),
-      Number(TG_USER_SEND_TIMEOUT_MS),
+      tgSendTimeoutMs,
       "tg-user-send-timeout",
     );
 
@@ -313,36 +340,69 @@ async function sendViaTelegramUserApi(query, userId) {
 
 const STRINGS = {
   de: {
+    greetings: [
+      "Hi, ich bin CLAWINAMETOKEN. Was möchtest du fragen?",
+      "Was möchtest du fragen?",
+      "Was denn hier los?",
+      "Ja? CLAWINAMETOKEN hier.",
+      "Hier CLAWINAMETOKEN, wie kann ich helfen?",
+    ],
     noReply: "Ich habe keine Antwort erhalten.",
     noSend: "Ich konnte die Nachricht nicht an Telegram schicken.",
     notUnderstood: "Ich habe deine Frage nicht verstanden.",
     noLastReply: "Ich habe noch keine letzte Antwort gefunden.",
     lastReplyPrefix: "Die letzte Antwort war:",
     askAgain: "Möchtest du noch etwas wissen?",
-    fallback: "Das habe ich leider nicht verstanden. Versuch es mit: Frage, gefolgt von deiner Frage.",
+    fallback:
+      "Das habe ich leider nicht verstanden. Versuch es mit: Frage, gefolgt von deiner Frage.",
     help: "Sprich einfach frei nach dem Start. Oder sag: Was war die letzte Antwort?",
     bye: "Bis bald.",
     error: "Sorry, da ist etwas schiefgelaufen.",
     errorReprompt: "Bitte versuch es erneut.",
+    telegramMsg: (query) =>
+      `🎤 Alexa: ${query}\n↩️ Bitte antworte direkt auf diese Nachricht. Antworte nur mit Text, der für die Sprachausgabe durch Alexa optimiert ist: keine Emojis, Sonderzeichen, Klammern, Markdown oder Aufzählungszeichen. Schreibe in vollständigen, natürlichen Sätzen.`,
   },
   en: {
+    greetings: [
+      "Hi, I'm CLAWINAMETOKEN. What would you like to ask?",
+      "What would you like to ask?",
+      "Yes? CLAWINAMETOKEN here.",
+      "CLAWINAMETOKEN here, how can I help?",
+    ],
     noReply: "I didn't receive a reply.",
     noSend: "I couldn't send the message to Telegram.",
     notUnderstood: "I didn't understand your question.",
     noLastReply: "I don't have a last reply yet.",
     lastReplyPrefix: "The last reply was:",
     askAgain: "Would you like to ask something else?",
-    fallback: "Sorry, I didn't get that. Try saying: ask, followed by your question.",
+    fallback:
+      "Sorry, I didn't get that. Try saying: ask, followed by your question.",
     help: "Just speak freely after the skill starts. Or say: what was the last answer?",
     bye: "Goodbye.",
     error: "Sorry, something went wrong.",
     errorReprompt: "Please try again.",
+    telegramMsg: (query) =>
+      `🎤 Alexa: ${query}\n↩️ Please reply directly to this message. Reply with text optimized for Alexa text-to-speech: no emojis, special characters, brackets, markdown or bullet points. Write in complete, natural sentences.`,
   },
 };
 
 function t(handlerInput) {
   const locale = handlerInput.requestEnvelope?.request?.locale || "de-DE";
   return locale.startsWith("en") ? STRINGS.en : STRINGS.de;
+}
+
+function elicitQueryDirective() {
+  return {
+    type: "Dialog.ElicitSlot",
+    slotToElicit: "query",
+    updatedIntent: {
+      name: "ChatIntent",
+      confirmationStatus: "NONE",
+      slots: {
+        query: { name: "query", value: "", confirmationStatus: "NONE" },
+      },
+    },
+  };
 }
 
 const LaunchRequestHandler = {
@@ -352,23 +412,12 @@ const LaunchRequestHandler = {
     );
   },
   handle(handlerInput) {
-    // Dialog.Delegate cannot be combined with speak().
-    // The Elicitation prompt ("Was möchtest du fragen?") is spoken by Alexa automatically.
+    const strings = t(handlerInput);
+    const greeting =
+      strings.greetings[Math.floor(Math.random() * strings.greetings.length)];
     return handlerInput.responseBuilder
-      .addDirective({
-        type: "Dialog.Delegate",
-        updatedIntent: {
-          name: "ChatIntent",
-          confirmationStatus: "NONE",
-          slots: {
-            query: {
-              name: "query",
-              value: "",
-              confirmationStatus: "NONE",
-            },
-          },
-        },
-      })
+      .speak(toAlexaSpeech(greeting, handlerInput))
+      .addDirective(elicitQueryDirective())
       .getResponse();
   },
 };
@@ -382,97 +431,32 @@ const ChatIntentHandler = {
   },
   async handle(handlerInput) {
     const query = Alexa.getSlotValue(handlerInput.requestEnvelope, "query");
-    const userId = getUserId(handlerInput.requestEnvelope);
+    const strings = t(handlerInput);
 
     if (!query) {
       return handlerInput.responseBuilder
-        .speak(t(handlerInput).notUnderstood)
-        .addDirective({
-          type: "Dialog.ElicitSlot",
-          slotToElicit: "query",
-          updatedIntent: {
-            name: "ChatIntent",
-            confirmationStatus: "NONE",
-            slots: {
-              query: { name: "query", value: "", confirmationStatus: "NONE" },
-            },
-          },
-        })
+        .speak(toAlexaSpeech(strings.notUnderstood, handlerInput))
+        .addDirective(elicitQueryDirective())
         .getResponse();
     }
 
-    // Append "?" so the Telegram bot always receives a clear question,
-    // even when the Alexa trigger word was stripped (e.g. "stimmt es dass").
-    const fullQuery = /[.?!]$/.test(query.trim()) ? query.trim() : `${query.trim()}?`;
-
-    let speakOutput = t(handlerInput).noReply;
-
-    try {
-      const sentId = await sendViaTelegramUserApi(fullQuery, userId);
-      if (sentId) {
-        const waitMs = Number(TG_REPLY_WAIT_MS);
-        const start = Date.now();
-        const settleMs = 1800; // wait until the same reply text stops changing
-
-        let picked = null;
-        let lastSeenReplyId = null;
-        let lastSeenText = "";
-        let lastChangeAt = 0;
-
-        while (Date.now() - start < waitMs) {
-          await sleep(500);
-          const reply = await getLatestMessageViaUserApi();
-          if (!reply?.id || reply.id <= sentId) continue;
-
-          if (lastSeenReplyId !== reply.id) {
-            lastSeenReplyId = reply.id;
-            lastSeenText = reply.text || "";
-            lastChangeAt = Date.now();
-            picked = reply;
-            continue;
-          }
-
-          if ((reply.text || "") !== lastSeenText) {
-            lastSeenText = reply.text || "";
-            lastChangeAt = Date.now();
-            picked = reply;
-            continue;
-          }
-
-          if (Date.now() - lastChangeAt >= settleMs) {
-            picked = reply;
-            break;
-          }
-        }
-
-        if (picked?.text) {
-          speakOutput = cleanSpeech(picked.text);
-          rememberLast(handlerInput, fullQuery, speakOutput);
-        }
-      } else {
-        speakOutput = t(handlerInput).noSend;
-      }
-    } catch (err) {
-      console.log("[ChatIntent] send/wait failed:", err?.message || err);
+    // send async to not wait
+    if (useWaitingSound) {
+      callDirectiveService(handlerInput, audioSpeech);
     }
 
     return handlerInput.responseBuilder
-      .speak(speakOutput)
-      .addDirective({
-        type: "Dialog.ElicitSlot",
-        slotToElicit: "query",
-        updatedIntent: {
-          name: "ChatIntent",
-          confirmationStatus: "NONE",
-          slots: {
-            query: {
-              name: "query",
-              value: "",
-              confirmationStatus: "NONE",
-            },
-          },
-        },
-      })
+      .speak(
+        toAlexaSpeech(
+          await getResponseFromTelegram(
+            handlerInput,
+            strings,
+            query,
+          ),
+          handlerInput,
+        ),
+      )
+      .addDirective(elicitQueryDirective())
       .getResponse();
   },
 };
@@ -485,19 +469,26 @@ const LastResponseIntentHandler = {
     return intent === "LastResponseIntent" || intent === "AMAZON.RepeatIntent";
   },
   async handle(handlerInput) {
-    const last = getLast(handlerInput);
-
     const s = t(handlerInput);
-    if (last?.reply) {
+    const local = getLast(handlerInput);
+    const last = local ?? (await getLatestMessageViaUserApi());
+
+    if (last?.reply ?? last?.text) {
+      const replyText = last.reply ?? last.text;
       return handlerInput.responseBuilder
-        .speak(`${s.lastReplyPrefix} ${cleanSpeech(last.reply)}`)
+        .speak(
+          toAlexaSpeech(
+            `${s.lastReplyPrefix} ${cleanSpeech(replyText)}`,
+            handlerInput,
+          ),
+        )
         .reprompt(s.askAgain)
         .withShouldEndSession(false)
         .getResponse();
     }
 
     return handlerInput.responseBuilder
-      .speak(s.noLastReply)
+      .speak(toAlexaSpeech(s.noLastReply, handlerInput))
       .reprompt(s.askAgain)
       .withShouldEndSession(false)
       .getResponse();
@@ -508,7 +499,8 @@ const FallbackIntentHandler = {
   canHandle(handlerInput) {
     return (
       Alexa.getRequestType(handlerInput.requestEnvelope) === "IntentRequest" &&
-      Alexa.getIntentName(handlerInput.requestEnvelope) === "AMAZON.FallbackIntent"
+      Alexa.getIntentName(handlerInput.requestEnvelope) ===
+        "AMAZON.FallbackIntent"
     );
   },
   handle(handlerInput) {
@@ -516,7 +508,7 @@ const FallbackIntentHandler = {
     // transcript is available here. Prompt the user to rephrase.
     const s = t(handlerInput);
     return handlerInput.responseBuilder
-      .speak(s.fallback)
+      .speak(toAlexaSpeech(s.fallback, handlerInput))
       .reprompt(s.askAgain)
       .withShouldEndSession(false)
       .getResponse();
@@ -533,7 +525,7 @@ const HelpIntentHandler = {
   handle(handlerInput) {
     const s = t(handlerInput);
     return handlerInput.responseBuilder
-      .speak(s.help)
+      .speak(toAlexaSpeech(s.help, handlerInput))
       .reprompt(s.askAgain)
       .withShouldEndSession(false)
       .getResponse();
@@ -551,7 +543,7 @@ const CancelAndStopIntentHandler = {
   },
   handle(handlerInput) {
     return handlerInput.responseBuilder
-      .speak(t(handlerInput).bye)
+      .speak(toAlexaSpeech(t(handlerInput).bye, handlerInput))
       .withShouldEndSession(true)
       .getResponse();
   },
@@ -565,7 +557,6 @@ const SessionEndedRequestHandler = {
     );
   },
   handle(handlerInput) {
-    console.log("Session ended:", JSON.stringify(handlerInput.requestEnvelope));
     return handlerInput.responseBuilder.getResponse();
   },
 };
@@ -579,7 +570,9 @@ const IntentReflectorHandler = {
   handle(handlerInput) {
     const intentName = Alexa.getIntentName(handlerInput.requestEnvelope);
     return handlerInput.responseBuilder
-      .speak(`Intent ${intentName} wurde ausgelöst.`)
+      .speak(
+        toAlexaSpeech(`Intent ${intentName} wurde ausgelöst.`, handlerInput),
+      )
       .getResponse();
   },
 };
@@ -592,12 +585,23 @@ const ErrorHandler = {
     console.error(`Error handled: ${error.message}`, error.stack);
     const s = t(handlerInput);
     return handlerInput.responseBuilder
-      .speak(s.error)
+      .speak(toAlexaSpeech(s.error, handlerInput))
       .reprompt(s.errorReprompt)
       .withShouldEndSession(false)
       .getResponse();
   },
 };
+
+function callDirectiveService(handlerInput, speechContent) {
+  const { requestEnvelope, serviceClientFactory } = handlerInput;
+  const directiveServiceClient =
+    serviceClientFactory.getDirectiveServiceClient();
+  const requestId = requestEnvelope.request.requestId;
+  return directiveServiceClient.enqueue({
+    header: { requestId },
+    directive: { type: "VoicePlayer.Speak", speech: speechContent },
+  });
+}
 
 const alexaHandler = Alexa.SkillBuilders.custom()
   .addRequestHandlers(
@@ -612,13 +616,98 @@ const alexaHandler = Alexa.SkillBuilders.custom()
   )
   .addErrorHandlers(ErrorHandler)
   .withCustomUserAgent("alexa/telegram-openclaw-skill/v0.4.0")
+  .withApiClient(new Alexa.DefaultApiClient())
   .withSkillId(ALEXA_SKILL_ID || undefined)
   .lambda();
 
 // gramjs creates persistent MTProto receive loops and heartbeat timers that keep
 // the Node.js event loop alive indefinitely. Without this, Lambda waits for the
 // event loop to drain before returning the response, causing Alexa to time out.
-export const handler = (event, context, callback) => {
+// Node.js 24 Lambda no longer supports callback-based handler signatures, so we
+// wrap the Alexa SDK's callback handler in a Promise.
+export const handler = async (event, context) => {
   context.callbackWaitsForEmptyEventLoop = false;
-  return alexaHandler(event, context, callback);
+  return new Promise((resolve, reject) => {
+    alexaHandler(event, context, (err, result) => {
+      if (err) reject(err);
+      else resolve(result);
+    });
+  });
 };
+async function getResponseFromTelegram(
+  handlerInput,
+  strings,
+  query,
+) {
+  // Append "?" so the Telegram bot always receives a clear question,
+  // even when the Alexa trigger word was stripped (e.g. "stimmt es dass").
+  const fullQuery = /[.?!]$/.test(query.trim())
+    ? query.trim()
+    : `${query.trim()}?`;
+
+  let speakOutput = strings.noReply;
+
+  try {
+    const sentId = await sendViaTelegramUserApi(fullQuery, strings);
+    if (sentId) {
+      const settleMs = 1200; // wait for streaming bots that edit their message
+
+      const client = await getTelegramUserClient();
+      const picked = await new Promise((resolve) => {
+        if (!client) {
+          resolve(null);
+          return;
+        }
+
+        let settleTimer = null;
+        let latestText = "";
+        let latestId = 0;
+
+        const finish = (result) => {
+          clearTimeout(settleTimer);
+          clearTimeout(globalTimeout);
+          client.removeEventHandler(onMsg, newMsgEvent);
+          if (editMsgEvent) client.removeEventHandler(onMsg, editMsgEvent);
+          resolve(result);
+        };
+
+        const globalTimeout = setTimeout(
+          () => finish(latestId ? { id: latestId, text: latestText } : null),
+          tgReplyWaitMs,
+        );
+
+        const onMsg = (event) => {
+          // Raw fallback delivers the TL update directly; extract the message from it.
+          const msg = isRawFallback
+            ? (event.message ?? event.editMessage ?? null)
+            : event.message;
+          if (!msg || msg.out) return;
+          if (Number(msg.id || 0) <= sentId) return;
+          const text = String(msg.message || "").trim();
+          if (!text || text.startsWith("🎤 Alexa:")) return;
+          latestText = text;
+          latestId = Number(msg.id);
+          clearTimeout(settleTimer);
+          settleTimer = setTimeout(
+            () => finish({ id: latestId, text: latestText }),
+            settleMs,
+          );
+        };
+
+        client.addEventHandler(onMsg, newMsgEvent);
+        if (editMsgEvent) client.addEventHandler(onMsg, editMsgEvent);
+      });
+
+      if (picked?.text) {
+        speakOutput = cleanSpeech(picked.text);
+        rememberLast(handlerInput, fullQuery, speakOutput);
+      }
+    } else {
+      speakOutput = strings.noSend;
+    }
+  } catch (err) {
+    console.log("[ChatIntent] send/wait failed:", err?.message || err);
+  }
+
+  return speakOutput;
+}
